@@ -3,6 +3,7 @@ mod config;
 mod db;
 mod import;
 mod models;
+mod narrative;
 mod parsers;
 mod weather;
 

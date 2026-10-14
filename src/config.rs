@@ -11,6 +11,8 @@ pub struct Config {
     pub weather_lat: Option<f64>,
     pub weather_lon: Option<f64>,
     pub weather_timezone: String,
+    pub ollama_url: String,
+    pub ollama_model: String,
 }
 
 impl Config {
@@ -29,6 +31,11 @@ impl Config {
         let weather_lon = env::var("ENERGY_WEATHER_LON").ok().and_then(|value| value.parse().ok());
         let weather_timezone = env::var("ENERGY_WEATHER_TIMEZONE")
             .unwrap_or_else(|_| "America/New_York".to_string());
+        // ponytail: default hosts for local/docker; set ENERGY_OLLAMA_URL if ollama lives elsewhere
+        let ollama_url = env::var("ENERGY_OLLAMA_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:11434".to_string());
+        let ollama_model = env::var("ENERGY_OLLAMA_MODEL")
+            .unwrap_or_else(|_| "qwen2.5:3b".to_string());
 
         Ok(Self {
             database_url,
@@ -38,6 +45,8 @@ impl Config {
             weather_lat,
             weather_lon,
             weather_timezone,
+            ollama_url,
+            ollama_model,
         })
     }
 }

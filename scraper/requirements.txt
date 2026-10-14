@@ -1,0 +1,9 @@
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+httpx==0.28.1
+playwright==1.51.0
+apscheduler==3.11.0
+pydantic==2.11.3
+pydantic-settings==2.8.1
+tzdata==2025.2
+pytest==8.3.5

@@ -13,6 +13,7 @@ use crate::{
     config::Config,
     import,
     models::{CsvImportRequest, ImportRun, MonthlyAggregate, MonthlyBill, MonthlyQuery, SummaryResponse},
+    narrative,
     weather,
 };
 
@@ -54,6 +55,7 @@ pub fn router(state: AppState) -> Router {
         .route("/energy/", get(energy_index))
         .route("/energy/summary", get(summary))
         .route("/energy/monthly", get(monthly))
+        .route("/energy/narrative", get(month_narrative))
         .route("/energy/import-runs", get(import_runs))
         .route("/energy/import", post(import_invoices))
         .route("/energy/import-csv", post(import_csv))
@@ -75,6 +77,7 @@ async fn energy_index() -> Json<serde_json::Value> {
         "endpoints": {
             "summary": "/energy/summary",
             "monthly": "/energy/monthly",
+            "narrative": "/energy/narrative",
             "importRuns": "/energy/import-runs",
             "importInvoices": "POST /energy/import",
             "importCsv": "POST /energy/import-csv",
@@ -82,6 +85,20 @@ async fn energy_index() -> Json<serde_json::Value> {
             "enrichWeather": "POST /energy/weather/enrich"
         }
     }))
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct NarrativeQuery {
+    force: Option<bool>,
+}
+
+async fn month_narrative(
+    State(state): State<AppState>,
+    Query(query): Query<NarrativeQuery>,
+) -> ApiResult<Json<narrative::NarrativeResponse>> {
+    let force = query.force.unwrap_or(false);
+    let narrative = narrative::get_narrative(&state.pool, &state.config, force).await?;
+    Ok(Json(narrative))
 }
 
 async fn summary(State(state): State<AppState>) -> ApiResult<Json<SummaryResponse>> {
