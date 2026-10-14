@@ -1,5 +1,6 @@
 use axum::{
-    extract::{Query, State},
+    body::Bytes,
+    extract::{DefaultBodyLimit, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -56,6 +57,10 @@ pub fn router(state: AppState) -> Router {
         .route("/energy/import-runs", get(import_runs))
         .route("/energy/import", post(import_invoices))
         .route("/energy/import-csv", post(import_csv))
+        .route(
+            "/energy/upload",
+            post(upload_invoice).layer(DefaultBodyLimit::max(UPLOAD_LIMIT_BYTES)),
+        )
         .route("/energy/weather/enrich", post(enrich_weather))
         .with_state(state)
 }
@@ -73,6 +78,7 @@ async fn energy_index() -> Json<serde_json::Value> {
             "importRuns": "/energy/import-runs",
             "importInvoices": "POST /energy/import",
             "importCsv": "POST /energy/import-csv",
+            "uploadInvoice": "POST /energy/upload?filename=<name.pdf|name.csv> (raw file body)",
             "enrichWeather": "POST /energy/weather/enrich"
         }
     }))
@@ -251,6 +257,32 @@ async fn import_csv(
         .unwrap_or_else(|| state.config.invoice_dir.join("Home Energy Usage - Monthly Usage.csv"));
     let run = import::import_csv_file(&state.pool, &path).await?;
     Ok(Json(crate::models::ImportResponse { run }))
+}
+
+const UPLOAD_LIMIT_BYTES: usize = 25 * 1024 * 1024;
+
+#[derive(Debug, serde::Deserialize)]
+struct UploadQuery {
+    filename: String,
+}
+
+async fn upload_invoice(
+    State(state): State<AppState>,
+    Query(query): Query<UploadQuery>,
+    body: Bytes,
+) -> ApiResult<Response> {
+    let bad_request = |error: String| {
+        (StatusCode::BAD_REQUEST, Json(json!({ "status": "error", "error": error }))).into_response()
+    };
+    if let Err(error) = import::sanitize_upload_filename(&query.filename) {
+        return Ok(bad_request(error.to_string()));
+    }
+    if body.is_empty() {
+        return Ok(bad_request("uploaded file is empty".to_string()));
+    }
+
+    let run = import::import_uploaded_file(&state.pool, &state.config, &query.filename, &body).await?;
+    Ok(Json(crate::models::ImportResponse { run }).into_response())
 }
 
 async fn enrich_weather(State(state): State<AppState>) -> ApiResult<Json<serde_json::Value>> {

@@ -105,6 +105,83 @@ pub async fn import_csv_file(pool: &SqlitePool, path: &Path) -> anyhow::Result<I
     get_import_run(pool, run_id).await
 }
 
+/// Saves an uploaded invoice into the invoice folder (so "Scan Invoices" sees it too) and imports it.
+pub async fn import_uploaded_file(
+    pool: &SqlitePool,
+    config: &Config,
+    filename: &str,
+    bytes: &[u8],
+) -> anyhow::Result<ImportRun> {
+    let filename = sanitize_upload_filename(filename)?;
+    let is_csv = filename.to_lowercase().ends_with(".csv");
+
+    if is_csv {
+        let (path, _) = save_upload(&config.invoice_dir, &filename, bytes).await?;
+        return import_csv_file(pool, &path).await;
+    }
+
+    let run_id = create_import_run(pool, "upload").await?;
+    if source_exists(pool, &sha256_hex(bytes)).await? {
+        finish_import_run(pool, run_id, "ok", 1, 0, 1, 0, Some(format!("{filename} was already imported"))).await?;
+        return get_import_run(pool, run_id).await;
+    }
+
+    let (path, created) = save_upload(&config.invoice_dir, &filename, bytes).await?;
+    let result = import_invoice_file(pool, &path).await;
+    if result.is_err() && created {
+        // Don't leave unreadable uploads behind for every later folder scan to trip over.
+        let _ = fs::remove_file(&path).await;
+    }
+
+    match result {
+        Ok(ImportFileOutcome::Imported) => finish_import_run(pool, run_id, "ok", 1, 1, 0, 0, None).await?,
+        Ok(ImportFileOutcome::Skipped) => finish_import_run(pool, run_id, "ok", 1, 0, 1, 0, None).await?,
+        Err(error) => {
+            tracing::warn!("failed importing upload {filename}: {error:?}");
+            finish_import_run(pool, run_id, "error", 1, 0, 0, 1, Some(error.to_string())).await?
+        }
+    }
+    get_import_run(pool, run_id).await
+}
+
+pub fn sanitize_upload_filename(filename: &str) -> anyhow::Result<String> {
+    // Keep only the final path component so a crafted name can't escape the invoice folder.
+    let name = filename.rsplit(['/', '\\']).next().unwrap_or("").trim();
+    let cleaned = name
+        .chars()
+        .map(|char| if char.is_ascii_alphanumeric() || " ._-()".contains(char) { char } else { '_' })
+        .collect::<String>();
+    if cleaned.is_empty() || cleaned.starts_with('.') {
+        bail!("invalid filename");
+    }
+    let lower = cleaned.to_lowercase();
+    if !lower.ends_with(".pdf") && !lower.ends_with(".csv") {
+        bail!("only .pdf invoices and .csv files can be uploaded");
+    }
+    Ok(cleaned)
+}
+
+/// Writes the upload without overwriting a different file of the same name ("bill.pdf" -> "bill (1).pdf").
+/// Returns the path and whether a new file was written (false when an identical copy was already there).
+async fn save_upload(dir: &Path, filename: &str, bytes: &[u8]) -> anyhow::Result<(PathBuf, bool)> {
+    let (stem, ext) = filename.rsplit_once('.').unwrap_or((filename, ""));
+    for attempt in 0..100 {
+        let candidate = if attempt == 0 { filename.to_string() } else { format!("{stem} ({attempt}).{ext}") };
+        let path = dir.join(&candidate);
+        if fs::try_exists(&path).await? {
+            if fs::read(&path).await? == bytes {
+                return Ok((path, false));
+            }
+            continue;
+        }
+        fs::write(&path, bytes)
+            .await
+            .with_context(|| format!("saving upload to {}", path.display()))?;
+        return Ok((path, true));
+    }
+    bail!("too many files named {filename} in the invoice folder")
+}
+
 enum ImportFileOutcome {
     Imported,
     Skipped,
@@ -761,5 +838,15 @@ mod tests {
         assert_eq!(electric_only.total_cost, 100.0);
 
         assert!(trim_historical_bill(historical_bill(), true, true).is_none());
+    }
+
+    #[test]
+    fn upload_filenames_stay_inside_invoice_folder() {
+        assert_eq!(sanitize_upload_filename("../../etc/bill.pdf").unwrap(), "bill.pdf");
+        assert_eq!(sanitize_upload_filename("C:\\Users\\me\\Sept bill.PDF").unwrap(), "Sept bill.PDF");
+        assert_eq!(sanitize_upload_filename("bill;rm -rf.pdf").unwrap(), "bill_rm -rf.pdf");
+        assert!(sanitize_upload_filename("../").is_err());
+        assert!(sanitize_upload_filename(".pdf").is_err());
+        assert!(sanitize_upload_filename("notes.txt").is_err());
     }
 }
